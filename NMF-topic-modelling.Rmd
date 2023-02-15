@@ -1,0 +1,237 @@
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(tidyr)
+library(mlpack)
+library(tidytext)
+library(ggplot2)
+library(tm)
+library(textmineR)
+```
+
+Obtaining the data
+```{r}
+load(file="fully_cleaned.Rdata")
+saved <- reviews_df
+reviews_df <- saved[1:10000,]
+reviews_df["User_ID"] <- 1:nrow(reviews_df)
+```
+
+Preprocess and create DTM
+```{r, echo=false}
+dtm <- CreateDtm(doc_vec = reviews_df[, "Review"], # character vector of documents
+                 doc_names = reviews_df[, "User_ID"]) # document names
+       
+```
+
+Count freq of words
+```{r}
+library(slam)
+summary(col_sums(as.matrix(dtm)))
+lowFreq <- (col_sums(dtm)<200)
+sum(lowFreq)
+```
+
+Filter low frequency words (and remove empty docs)
+```{r}
+dtm <- dtm[, !lowFreq]
+dtm <- dtm[row_sums(dtm) > 0,]
+summary(col_sums(dtm))
+n <- nrow(dtm)
+dim(dtm)
+```
+
+```{r}
+saved_dtm <- dtm
+dtm <- saved_dtm
+```
+
+Optional: select a number of columns for experimentation purposes
+```{r}
+maxcols <- ncol(dtm)
+dropcols <- (col_sums(dtm[,1:maxcols]) < 1)
+dtm <- dtm[,!dropcols]
+
+maxcols <- ncol(dtm)
+
+droprows <- (row_sums(dtm[,1:maxcols])==0)
+dtm <- dtm[!droprows,]
+dim(dtm)
+maxcols <- ncol(dtm)
+# we started with 9944 documents and end up with 122 words (after removing some words) 
+```
+
+Create TDM
+```{r}
+V <- t(as.matrix(dtm[,1:maxcols]))  # NMF is usually defined on term-document-matrix
+```
+
+```{r, what does V look like?}
+V[1:10,1:10]
+# by column we have the document IDs 
+# by row we have different words where for e.g. second id connects with the word chang
+```
+
+Obtain NMF with different methods: multdist
+```{r}
+install.packages("NMF")
+install.packages("Biobase")
+install.packages("pkgmaker")
+install.packages("registry")
+install.packages("rngtools")
+install.packages("cluster")
+library(Biobase)
+library(NMF)
+nfactors <- 10
+# we want to factorize matrix V (term document matrix into to components 1:documents to vectors, 2:vectors to words)
+res_nmf <- nmf(
+  V,
+  nfactors,
+  initial_h = NA,
+  initial_w = NA,
+  max_iterations = NA,
+  min_residue = NA,
+  seed = NA,
+  update_rules = "multdist", # list("multdist","multdiv","als")
+  verbose = TRUE
+)
+
+# iterations = 145
+```
+
+Obtain NMF with different methods: multdiv
+```{r}
+res_nmf <- nmf(
+  V,
+  nfactors,
+  initial_h = NA,
+  initial_w = NA,
+  max_iterations = NA,
+  min_residue = NA,
+  seed = NA,
+  update_rules = "multdist", # list("multdist","multdiv","als")
+  verbose = TRUE
+)
+
+# faster comparing to multdist with 32 iterations 
+```
+
+Obtain NMF with different methods: ALS
+```{r}
+res_nmf <- nmf(
+  V,
+  nfactors,
+  initial_h = NA,
+  initial_w = NA,
+  max_iterations = NA,
+  min_residue = NA,
+  seed = NA,
+  update_rules = "als", # list("multdist","multdiv","als")
+  verbose = TRUE
+)
+
+# als is in the middle with 75 iterations  
+```
+
+
+```{r}
+head(t(res_nmf$h))
+
+head(res_nmf$w)
+
+# [1,] this indicates document no1 and [,1] indicates the vectors. under its vector there is the weight for each document
+```
+
+Use fast/good method with different ranks
+```{r}
+nmf_rank = NULL
+for (n in seq(2,20,2))
+{
+  res_nmf <- nmf(
+  V,
+  nfactors,
+  initial_h = NA,
+  initial_w = NA,
+  max_iterations = NA,
+  min_residue = NA,
+  seed = NA,
+  update_rules = "als", # list("multdist","multdiv","als")
+  verbose = FALSE
+)
+  fit <- t(res_nmf$h)%*%t(res_nmf$w)
+  summary <- cbind(n,mean((t(V)-fit)^2))
+  nmf_rank = rbind(nmf_rank, summary)
+}
+print(nmf_rank)
+
+# the prediction error is relatively stable with a slight decrease 
+```
+
+Look at SVD to get rank to use
+```{r SVD}
+res <- svd(V)
+plot(res$d[1:40])
+
+# around 20 it seems to flatten but it not that informative so probably could drop it
+```
+
+Plot some output
+```{r}
+heatmap(V,  Rowv=NA, Colv=NA,main="V",scale="none")
+heatmap(fit,  Rowv=NA, Colv=NA,main="fit",scale="none")
+heatmap(V-t(fit),  Rowv=NA, Colv=NA,main="error",scale="none")
+
+# first heatmap is the matrix V we want to approximate 
+# on the x axis we have all the documents and on the y axis we have the words and their occurrence  
+# 3rd heatmap shows the prediction error and we want this to be minimized (by donkers euangelion)
+```
+
+```{r}
+H<-res_nmf$h
+W<-res_nmf$w
+rownames(W) <- rownames(V)
+heatmap(W, Colv=NA, main="W",scale="row")
+
+heatmap(H, Rowv=NA, main="H",scale="column")
+
+# first heatmap indicates the W matrix and on the right y axis we have the words corresponding to the documents on the x axis and the frequency is represented on the heatmap based on the color
+# the second heatmap represents the occurance of the documents (x axis) on the 10 dimensions (y axis)
+```
+
+```{r}
+heatmap((H[,1:6]), Colv=NA, Rowv=NA, main="",scale="column")
+
+heatmap(W[apply(W, 1, max) > 23,], Colv=NA, main="W, selected words with highest scores",scale="none")
+
+```
+
+Terms loading high..
+```{r}
+install.packages("slam")
+library(slam)
+relW <- W/(rep(1,nrow(W))%*%t(col_sums(W)))
+Wtable <- data.frame(topic= c(1:nfactors), t(relW))
+Wtable <- gather(Wtable, term, score, -topic)
+
+text_top_terms <- Wtable %>%
+  group_by(topic) %>%
+  top_n(10, score) %>%
+  ungroup() %>%
+  arrange(topic, -score)
+
+text_top_terms %>%
+  filter(topic <= 6) %>%
+  mutate(term = reorder_within(term, score, topic)) %>%
+  ggplot(aes(term, score, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  coord_flip()+
+  scale_x_reordered()
+```
+
+```{r find topic weights}
+NdocScores <- H/(rep(1,nfactors) %*% t(col_sums(H)))
+NdocScores[,1:10]
+```
